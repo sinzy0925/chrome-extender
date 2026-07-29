@@ -1,0 +1,7 @@
+# 公式の最新 Gemini SDK を使う（レガシー google-generativeai は不可）
+google-genai>=2.14.0
+playwright>=1.49.0
+python-dotenv>=1.0.0
+
+# 開発・テスト用
+pytest>=8.0.0

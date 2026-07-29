@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "browser-assistant"
+version = "0.1.0"
+description = "Windows用の日本語指示ブラウザ助手（Playwright + CDP + Gemini）"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "browser-assistant contributors" }]
+dependencies = [
+  # 公式 Gemini SDK（最新安定版へ追従。古い google-generativeai は使わない）
+  "google-genai>=2.14.0",
+  "playwright>=1.49.0",
+  "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0.0",
+  "pyinstaller>=6.0",
+]
+
+[project.scripts]
+browser-assistant = "browser_assistant.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+markers = [
+  "integration: requires local Google Chrome and opens a real browser",
+]

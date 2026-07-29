@@ -1,0 +1,6 @@
+{
+  "action": "goto",
+  "url": "https://example.com",
+  "risk": "low",
+  "reason": "サンプル: URLを開く"
+}
