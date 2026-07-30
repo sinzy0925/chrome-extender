@@ -75,6 +75,49 @@ def test_click_and_type_with_known_selectors(page) -> None:
     assert executor.steps_executed == 2
 
 
+def test_type_press_enter_submits_form(page) -> None:
+    html = """
+    <!doctype html>
+    <html><body>
+      <form id="f" action="https://example.com/search" method="get"
+            onsubmit="document.getElementById('out').textContent='submitted:'+document.getElementById('q').value; return false;">
+        <input id="q" name="q" type="text" />
+      </form>
+      <div id="out"></div>
+    </body></html>
+    """
+    page.set_content(html)
+    result = dispatch_action(
+        page,
+        ConfirmedAction(action="type", selector="#q", text="hello", press_enter=True),
+        element_timeout_ms=3000,
+    )
+    assert result.ok
+    assert result.data.get("press_enter") is True
+    assert page.locator("#out").inner_text() == "submitted:hello"
+
+
+def test_type_newline_implies_enter(page) -> None:
+    html = """
+    <!doctype html>
+    <html><body>
+      <form onsubmit="document.getElementById('out').textContent='ok'; return false;">
+        <input id="q" type="text" />
+      </form>
+      <div id="out"></div>
+    </body></html>
+    """
+    page.set_content(html)
+    result = dispatch_action(
+        page,
+        ConfirmedAction(action="type", selector="#q", text="x\n"),
+        element_timeout_ms=3000,
+    )
+    assert result.ok
+    assert page.input_value("#q") == "x"
+    assert page.locator("#out").inner_text() == "ok"
+
+
 def test_missing_element_stops_with_reason(page, caplog: pytest.LogCaptureFixture) -> None:
     page.set_content(FORM_HTML)
     executor = ActionExecutor(max_steps=5, post_wait_ms=0, reobserve=False)

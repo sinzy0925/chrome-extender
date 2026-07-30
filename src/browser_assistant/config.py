@@ -36,6 +36,10 @@ class Settings:
     max_consecutive_failures: int = 2
     replan_on_failure: bool = True
     collect_mode: bool = False
+    intent_sites_path: Path | None = None
+    intent_phrases_path: Path | None = None
+    intent_default_result_type: str = "urls"
+    intent_extract_url_limit: int = 50
 
 
 def _require_non_empty(name: str, value: str | None) -> str:
@@ -120,6 +124,20 @@ def load_settings(
     collect_raw = os.getenv("COLLECT_MODE", "false").strip().lower()
     collect_mode = collect_raw in {"1", "true", "yes", "on"}
 
+    sites_raw = os.getenv("INTENT_SITES_PATH", "aliases/sites.json").strip() or "aliases/sites.json"
+    phrases_raw = os.getenv("INTENT_RESULT_PHRASES_PATH", "aliases/result_phrases.json").strip() or (
+        "aliases/result_phrases.json"
+    )
+    default_rt = os.getenv("INTENT_DEFAULT_RESULT_TYPE", "urls").strip().lower() or "urls"
+    if default_rt not in {"urls", "title", "text", "none"}:
+        raise ConfigError("INTENT_DEFAULT_RESULT_TYPE は urls|title|text|none のいずれかにしてください。")
+    try:
+        url_limit = int(os.getenv("INTENT_EXTRACT_URL_LIMIT", "50"))
+    except ValueError as exc:
+        raise ConfigError("INTENT_EXTRACT_URL_LIMIT は整数で指定してください。") from exc
+    if url_limit < 1:
+        raise ConfigError("INTENT_EXTRACT_URL_LIMIT は 1 以上にしてください。")
+
     return Settings(
         gemini_api_key=api_key,
         gemini_model_flash=os.getenv("GEMINI_MODEL_FLASH", "gemini-3.5-flash").strip()
@@ -142,4 +160,8 @@ def load_settings(
         max_consecutive_failures=max_fail,
         replan_on_failure=replan_on_failure,
         collect_mode=collect_mode,
+        intent_sites_path=resolve_under_app(sites_raw, base),
+        intent_phrases_path=resolve_under_app(phrases_raw, base),
+        intent_default_result_type=default_rt,
+        intent_extract_url_limit=url_limit,
     )

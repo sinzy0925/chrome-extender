@@ -30,7 +30,9 @@ class FakeGemini:
         self.replan: StepPlan | None = None
         self._resolve_seq: list[ElementResolution] | None = None
 
-    def plan_steps(self, instruction: str, *, current_url: str | None = None) -> StepPlan:
+    def plan_steps(
+        self, instruction: str, *, current_url: str | None = None, intent=None
+    ) -> StepPlan:
         self.plan_calls += 1
         if self.plan_calls > 1 and self.replan is not None:
             return self.replan

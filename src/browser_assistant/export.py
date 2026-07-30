@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -39,10 +40,36 @@ class CollectionStore:
         for row in rows:
             self.add(row)
 
-    def preview(self, *, max_rows: int = 20) -> str:
+    def preview(self, *, max_rows: int = 50) -> str:
         """コンソール向けの簡易プレビュー."""
         if self.is_empty:
             return "(収集結果なし)"
+
+        # URL一覧（formatted / items）を優先して読みやすく出す
+        for row in self.rows:
+            formatted = str(row.get("formatted") or "").strip()
+            items = row.get("items")
+            if formatted:
+                lines = [f"収集URL: {row.get('count', '')} 件".strip()]
+                # [1]u1 [2]u2 → 1行ずつ
+                parts = re.findall(r"\[(\d+)\](\S+)", formatted)
+                if parts:
+                    for n, u in parts[:max_rows]:
+                        lines.append(f"[{n}] {u}")
+                    if len(parts) > max_rows:
+                        lines.append(f"... 他 {len(parts) - max_rows} 件")
+                else:
+                    lines.append(formatted)
+                return "\n".join(lines)
+            if isinstance(items, list) and items:
+                lines = [f"収集URL: {len(items)} 件"]
+                for it in items[:max_rows]:
+                    if isinstance(it, dict):
+                        lines.append(f"[{it.get('n')}] {it.get('url')}")
+                if len(items) > max_rows:
+                    lines.append(f"... 他 {len(items) - max_rows} 件")
+                return "\n".join(lines)
+
         lines = [f"収集件数: {len(self.rows)}"]
         show = self.rows[: max(1, max_rows)]
         for i, row in enumerate(show, start=1):
@@ -56,7 +83,9 @@ class CollectionStore:
 
     def to_json_text(self, *, indent: int | None = 2) -> str:
         self._ensure_exportable()
-        return json.dumps(self.rows, ensure_ascii=False, indent=indent)
+        # URL一覧は items（番号付き）を優先して見やすくする
+        payload = _flatten_rows_for_export(self.rows)
+        return json.dumps(payload, ensure_ascii=False, indent=indent)
 
     def save_json(self, path: Path) -> Path:
         self._ensure_exportable()
@@ -68,7 +97,8 @@ class CollectionStore:
     def to_csv_text(self) -> str:
         """Excel 向けに UTF-8 BOM 付き CSV 文字列を返す."""
         self._ensure_exportable()
-        fieldnames = _collect_fieldnames(self.rows)
+        flat_rows = _flatten_rows_for_export(self.rows)
+        fieldnames = _collect_fieldnames(flat_rows)
         buf = io.StringIO()
         writer = csv.DictWriter(
             buf,
@@ -77,7 +107,7 @@ class CollectionStore:
             lineterminator="\n",
         )
         writer.writeheader()
-        for row in self.rows:
+        for row in flat_rows:
             writer.writerow({k: _cell_value(row.get(k)) for k in fieldnames})
         # BOM はファイル保存時に付与（文字列比較しやすいようここでは本文のみ）
         return buf.getvalue()
@@ -98,6 +128,20 @@ class CollectionStore:
                 "収集結果が 0 件のためダウンロードできません。"
                 " extract ステップでデータが取れたか確認してください。"
             )
+
+
+def _flatten_rows_for_export(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """items があれば 1URL=1行に展開する."""
+    flat: list[dict[str, Any]] = []
+    for row in rows:
+        items = row.get("items")
+        if isinstance(items, list) and items:
+            for it in items:
+                if isinstance(it, dict) and it.get("url"):
+                    flat.append({"n": it.get("n"), "url": it.get("url")})
+            continue
+        flat.append(dict(row))
+    return flat or list(rows)
 
 
 def _collect_fieldnames(rows: list[dict[str, Any]]) -> list[str]:

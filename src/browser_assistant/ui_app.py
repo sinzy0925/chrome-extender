@@ -276,6 +276,7 @@ class BrowserAssistantApp:
                 post_wait_ms=self.settings.post_action_wait_ms,
                 reobserve=True,
                 max_candidates=self.settings.observe_max_candidates,
+                extract_url_limit=self.settings.intent_extract_url_limit,
             )
 
             def on_event(event) -> None:  # noqa: ANN001
@@ -294,6 +295,11 @@ class BrowserAssistantApp:
                 on_event=on_event,
                 confirm_callback=self._confirm_callback,
                 collect_mode=collect_mode,
+                app_dir=self.settings.app_dir,
+                intent_sites_path=self.settings.intent_sites_path,
+                intent_phrases_path=self.settings.intent_phrases_path,
+                intent_default_result_type=self.settings.intent_default_result_type,
+                extract_url_limit=self.settings.intent_extract_url_limit,
             )
             with build_session(self.settings, keep_open=self.settings.keep_browser_open) as session:
                 self._queue.put(("log", LOGIN_GUIDE))

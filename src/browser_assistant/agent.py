@@ -5,10 +5,16 @@ from __future__ import annotations
 import logging
 import threading
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable
 
 from browser_assistant.executor import ActionError, ActionExecutor, ActionResult, ConfirmedAction
 from browser_assistant.gemini_client import GeminiClient, GeminiError
+from browser_assistant.intent.normalize import (
+    NormalizedIntent,
+    intent_result_satisfied,
+    normalize_intent,
+)
 from browser_assistant.observe import Observation, get_active_page, observe_page
 from browser_assistant.safety import (
     ConfirmCallback,
@@ -39,6 +45,7 @@ class AgentRunResult:
     message: str
     events: list[AgentEvent] = field(default_factory=list)
     extracts: list[dict[str, Any]] = field(default_factory=list)
+    intent: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -46,6 +53,7 @@ class AgentRunResult:
             "message": self.message,
             "events": [e.to_dict() for e in self.events],
             "extracts": self.extracts,
+            "intent": self.intent,
         }
 
 
@@ -63,6 +71,11 @@ class AgentLoop:
         on_event: Callable[[AgentEvent], None] | None = None,
         confirm_callback: ConfirmCallback | None = None,
         collect_mode: bool = False,
+        app_dir: Path | None = None,
+        intent_sites_path: Path | None = None,
+        intent_phrases_path: Path | None = None,
+        intent_default_result_type: str = "urls",
+        extract_url_limit: int = 50,
     ) -> None:
         self.gemini = gemini
         self.executor = executor
@@ -72,8 +85,14 @@ class AgentLoop:
         self.on_event = on_event
         self.confirm_callback = confirm_callback
         self.collect_mode = collect_mode
+        self.app_dir = app_dir
+        self.intent_sites_path = intent_sites_path
+        self.intent_phrases_path = intent_phrases_path
+        self.intent_default_result_type = intent_default_result_type
+        self.extract_url_limit = extract_url_limit
         self._stop = threading.Event()
         self._replanned = False
+        self._intent: NormalizedIntent | None = None
 
     def request_stop(self) -> None:
         """実行中のループを次のチェックポイントで止める."""
@@ -116,6 +135,20 @@ class AgentLoop:
             self.on_event(event)
         self._events.append(event)
 
+    def _normalize(self, instruction: str) -> NormalizedIntent:
+        from browser_assistant.intent.result_type import ResultType
+
+        default_rt: ResultType = "urls"
+        if self.intent_default_result_type in {"urls", "title", "text", "none"}:
+            default_rt = self.intent_default_result_type  # type: ignore[assignment]
+        return normalize_intent(
+            instruction,
+            app_dir=self.app_dir,
+            sites_path=self.intent_sites_path,
+            phrases_path=self.intent_phrases_path,
+            default_result_type=default_rt,
+        )
+
     def run(self, page: Any, instruction: str) -> AgentRunResult:
         self._replanned = False
         self._events: list[AgentEvent] = []
@@ -125,6 +158,10 @@ class AgentLoop:
         if not instruction:
             return AgentRunResult(status="failed", message="指示が空です", events=self._events)
 
+        intent = self._normalize(instruction)
+        self._intent = intent
+        self._emit("intent", "指示を正規化しました", **intent.to_dict())
+
         try:
             if self._stop.is_set():
                 self._emit("stop", "開始前に中断されました")
@@ -133,9 +170,19 @@ class AgentLoop:
                     message="Stop により中断しました",
                     events=self._events,
                     extracts=extracts,
+                    intent=intent.to_dict(),
                 )
-            self._emit("plan", "手順分解を開始", instruction=instruction)
-            plan = self.gemini.plan_steps(instruction, current_url=getattr(page, "url", None))
+            self._emit(
+                "plan",
+                "手順分解を開始",
+                instruction=instruction,
+                normalized=intent.normalized_instruction,
+            )
+            plan = self.gemini.plan_steps(
+                instruction,
+                current_url=getattr(page, "url", None),
+                intent=intent.to_dict(),
+            )
             self._emit(
                 "plan",
                 "手順分解完了",
@@ -147,6 +194,7 @@ class AgentLoop:
                 status="failed",
                 message=str(exc),
                 events=self._events,
+                intent=intent.to_dict(),
             )
 
         steps = list(plan.steps)
@@ -161,6 +209,7 @@ class AgentLoop:
                     message="Stop により中断しました",
                     events=self._events,
                     extracts=extracts,
+                    intent=intent.to_dict(),
                 )
 
             step = steps[idx]
@@ -171,12 +220,49 @@ class AgentLoop:
             )
 
             if step.action == "done":
+                if not intent_result_satisfied(intent, extracts):
+                    self._emit(
+                        "done",
+                        "成果物が不足しているため完了を保留",
+                        result_type=intent.result_type,
+                        extracts=extracts,
+                    )
+                    if self.replan_on_failure and not self._replanned:
+                        replan = self._try_replan(
+                            page,
+                            intent.normalized_instruction,
+                            steps[idx:],
+                            f"result_type={intent.result_type} の成果がまだ取れていません",
+                            intent=intent,
+                        )
+                        if replan is not None and replan.steps:
+                            self._replanned = True
+                            consecutive_failures = 0
+                            steps = list(replan.steps)
+                            idx = 0
+                            self._emit(
+                                "replan",
+                                "成果不足のため再計画しました（1回まで）",
+                                steps=[s.to_dict() for s in replan.steps],
+                            )
+                            continue
+                    return AgentRunResult(
+                        status="failed",
+                        message=(
+                            f"完了条件未達: result_type={intent.result_type} の結果が取れていません"
+                        ),
+                        events=self._events,
+                        extracts=extracts,
+                        intent=intent.to_dict(),
+                    )
+
                 self._emit("done", "完了ステップに到達")
                 return AgentRunResult(
                     status="completed",
                     message="完了しました",
                     events=self._events,
                     extracts=extracts,
+                    intent=intent.to_dict(),
                 )
 
             if step.action == "ask_user":
@@ -186,10 +272,11 @@ class AgentLoop:
                     message=step.reason or step.instruction or "ユーザー確認が必要です",
                     events=self._events,
                     extracts=extracts,
+                    intent=intent.to_dict(),
                 )
 
             try:
-                confirmed = self._prepare_action(page, step)
+                confirmed = self._prepare_action(page, step, intent=intent)
                 if confirmed.action == "ask_user":
                     self._emit("ask_user", confirmed.reason or "要素を確定できませんでした")
                     return AgentRunResult(
@@ -197,6 +284,7 @@ class AgentLoop:
                         message=confirmed.reason or "ユーザー確認が必要です",
                         events=self._events,
                         extracts=extracts,
+                        intent=intent.to_dict(),
                     )
 
                 if self._stop.is_set():
@@ -206,6 +294,7 @@ class AgentLoop:
                         message="Stop により中断しました",
                         events=self._events,
                         extracts=extracts,
+                        intent=intent.to_dict(),
                     )
 
                 safety = assess_action(confirmed, collect_mode=self.collect_mode)
@@ -217,6 +306,7 @@ class AgentLoop:
                         message=f"安全確認で中止: {safety.summary}",
                         events=self._events,
                         extracts=extracts,
+                        intent=intent.to_dict(),
                     )
                 if gate == "skip":
                     self._emit("safety", "この手をスキップしました", verdict=safety.summary)
@@ -235,7 +325,26 @@ class AgentLoop:
 
                 self._emit("execute", "1手実行", action=confirmed.to_dict())
                 result = self.executor.run_one(page, confirmed)
-                self._emit("execute", "1手成功", result=result.to_dict())
+                # 大きな observation はログを膨らませるので要約だけイベントへ
+                slim = result.to_dict()
+                if "observation" in slim:
+                    obs = slim["observation"]
+                    slim["observation"] = {
+                        "url": obs.get("url"),
+                        "title": obs.get("title"),
+                        "candidate_count": obs.get("candidate_count"),
+                    }
+                # URL一覧は formatted を前面に
+                if result.action == "extract" and isinstance(result.data, dict):
+                    data = result.data
+                    if data.get("formatted"):
+                        slim["data"] = {
+                            "count": data.get("count"),
+                            "formatted": data.get("formatted"),
+                            "title": data.get("title"),
+                            "page_url": data.get("page_url"),
+                        }
+                self._emit("execute", "1手成功", result=slim)
                 if result.action == "extract" and result.data:
                     extracts.append(result.data)
                 consecutive_failures = 0
@@ -254,7 +363,13 @@ class AgentLoop:
                     and not self._replanned
                     and consecutive_failures >= 1
                 ):
-                    replan = self._try_replan(page, instruction, steps[idx:], str(exc))
+                    replan = self._try_replan(
+                        page,
+                        intent.normalized_instruction,
+                        steps[idx:],
+                        str(exc),
+                        intent=intent,
+                    )
                     if replan is not None and replan.steps:
                         self._replanned = True
                         consecutive_failures = 0
@@ -274,6 +389,7 @@ class AgentLoop:
                         message=f"連続失敗のため停止: {exc}",
                         events=self._events,
                         extracts=extracts,
+                        intent=intent.to_dict(),
                     )
 
                 # 再計画不可・閾値未満でも無限リトライはしない
@@ -282,7 +398,18 @@ class AgentLoop:
                     message=str(exc),
                     events=self._events,
                     extracts=extracts,
+                    intent=intent.to_dict(),
                 )
+
+        if not intent_result_satisfied(intent, extracts):
+            self._emit("done", "全ステップ消化したが成果不足", result_type=intent.result_type)
+            return AgentRunResult(
+                status="failed",
+                message=f"成果不足: result_type={intent.result_type}",
+                events=self._events,
+                extracts=extracts,
+                intent=intent.to_dict(),
+            )
 
         self._emit("done", "全ステップ消化（done なし）")
         return AgentRunResult(
@@ -290,6 +417,7 @@ class AgentLoop:
             message="全ステップを実行しました",
             events=self._events,
             extracts=extracts,
+            intent=intent.to_dict(),
         )
 
     def _try_replan(
@@ -298,6 +426,8 @@ class AgentLoop:
         original_instruction: str,
         remaining: list[PlanStep],
         error: str,
+        *,
+        intent: NormalizedIntent | None = None,
     ) -> StepPlan | None:
         try:
             prompt = (
@@ -309,18 +439,40 @@ class AgentLoop:
             return self.gemini.plan_steps(
                 prompt,
                 current_url=getattr(page, "url", None),
+                intent=intent.to_dict() if intent else None,
             )
         except GeminiError as exc:
             self._emit("replan", f"再計画失敗: {exc}")
             return None
 
-    def _prepare_action(self, page: Any, step: PlanStep) -> ConfirmedAction:
+    def _prepare_action(
+        self,
+        page: Any,
+        step: PlanStep,
+        *,
+        intent: NormalizedIntent | None = None,
+    ) -> ConfirmedAction:
         """ステップ種別に応じて観察・要素確定し、ConfirmedAction を作る."""
         if step.action == "goto":
+            url = step.url or _extract_url_from_text(step.instruction)
+            if not url and intent and intent.target_url:
+                url = intent.target_url
+            # Google + クエリなら検索結果へ直接行く（click 失敗を避ける）
+            if intent and intent.query_hint and intent.site_alias == "google":
+                from urllib.parse import quote
+
+                q = quote(intent.query_hint)
+                search_url = f"https://www.google.com/search?q={q}"
+                if not url or (
+                    "google." in url
+                    and "/search" not in url
+                    and "q=" not in url
+                ):
+                    url = search_url
             return ConfirmedAction(
                 action="goto",
                 risk=step.risk,
-                url=step.url or _extract_url_from_text(step.instruction),
+                url=url,
                 reason=step.reason or step.instruction,
             )
         if step.action == "wait":
@@ -331,11 +483,20 @@ class AgentLoop:
                 reason=step.reason or step.instruction,
             )
         if step.action == "extract":
+            fields = step.extract_fields or ["url", "title", "text_preview"]
+            result_type = intent.result_type if intent else None
+            if result_type == "urls":
+                fields = ["formatted", "count", "items"]
+            elif result_type == "title":
+                fields = ["title", "url"]
+            elif result_type == "text":
+                fields = ["text", "url", "title"]
             return ConfirmedAction(
                 action="extract",
                 risk=step.risk,
-                extract_fields=step.extract_fields or ["url", "title", "text_preview"],
+                extract_fields=fields,
                 reason=step.reason or step.instruction,
+                result_type=result_type,
             )
 
         # click / type / select は観察 → Lite 確定
@@ -370,13 +531,40 @@ class AgentLoop:
             )
 
         text = resolved.text if resolved.text is not None else step.text
+        if text is None and intent and intent.query_hint and step.action == "type":
+            text = intent.query_hint
+
+        press_enter = _should_press_enter(step, intent=intent, text=text)
+
         return ConfirmedAction(
             action=resolved.action if resolved.action in {"click", "type", "select"} else step.action,
             risk=resolved.risk or step.risk,
             selector=selector,
             text=text,
             reason=resolved.reason or step.reason or step.instruction,
+            press_enter=press_enter,
         )
+
+
+def _should_press_enter(
+    step: PlanStep,
+    *,
+    intent: NormalizedIntent | None,
+    text: str | None,
+) -> bool:
+    if step.action != "type":
+        return False
+    blob = f"{step.instruction or ''} {step.reason or ''}"
+    if "\n" in (text or "") or "\n" in (step.text or ""):
+        return True
+    if any(k in blob for k in ("Enter", "エンター", "enter", "検索を実行", "送信して検索")):
+        return True
+    # 検索クエリ入力 → Enter で結果へ（検索ボタン click より安定）
+    if intent and intent.query_hint and intent.result_type == "urls":
+        t = (text or "").strip()
+        if t == intent.query_hint.strip() or "検索" in blob or "入力" in blob:
+            return True
+    return False
 
 
 def _selector_from_resolution(

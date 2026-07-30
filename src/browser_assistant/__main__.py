@@ -14,7 +14,7 @@ from browser_assistant.browser import LOGIN_GUIDE, BrowserError, build_session
 from browser_assistant.config import ConfigError, Settings, load_settings
 from browser_assistant.executor import ActionError, ActionExecutor, ConfirmedAction
 from browser_assistant.gemini_client import GeminiClient, GeminiError
-from browser_assistant.logging_setup import setup_logging
+from browser_assistant.logging_setup import log_launch_banner, setup_logging
 from browser_assistant.observe import get_active_page, observe_page, save_observation_json
 from browser_assistant.paths import get_app_dir, get_env_path
 
@@ -243,8 +243,18 @@ def _cmd_plan(settings: Settings, instruction: str) -> int:
     setup_logging(settings.log_level)
     logger = logging.getLogger("browser_assistant")
     try:
+        from browser_assistant.intent import normalize_intent
+
+        intent = normalize_intent(
+            instruction,
+            app_dir=settings.app_dir,
+            sites_path=settings.intent_sites_path,
+            phrases_path=settings.intent_phrases_path,
+            default_result_type=settings.intent_default_result_type,  # type: ignore[arg-type]
+        )
+        print(json.dumps({"intent": intent.to_dict()}, ensure_ascii=False, indent=2))
         client = GeminiClient(settings)
-        plan = client.plan_steps(instruction)
+        plan = client.plan_steps(instruction, intent=intent.to_dict())
         print(json.dumps(plan.to_dict(), ensure_ascii=False, indent=2))
     except GeminiError as exc:
         logger.error("%s", exc)
@@ -352,6 +362,7 @@ def _cmd_run(
         post_wait_ms=settings.post_action_wait_ms,
         reobserve=True,
         max_candidates=settings.observe_max_candidates,
+        extract_url_limit=settings.intent_extract_url_limit,
     )
     loop = AgentLoop(
         gemini=gemini,
@@ -362,6 +373,11 @@ def _cmd_run(
         on_event=lambda e: print(f"[{e.phase}] {e.message}"),
         confirm_callback=_confirm,
         collect_mode=use_collect,
+        app_dir=settings.app_dir,
+        intent_sites_path=settings.intent_sites_path,
+        intent_phrases_path=settings.intent_phrases_path,
+        intent_default_result_type=settings.intent_default_result_type,
+        extract_url_limit=settings.intent_extract_url_limit,
     )
 
     def _handle_sigint(signum, frame):  # noqa: ANN001, ARG001
@@ -412,6 +428,14 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     app_dir = get_app_dir()
     logger = setup_logging("INFO")
+    # ログ先頭に起動方法を残す（再 setup 後も追記で残るよう先に書く）
+    log_launch_banner(
+        logger,
+        argv=sys.argv if argv is None else ["browser-assistant", *argv],
+        args=args,
+        app_dir=app_dir,
+        version=__version__,
+    )
 
     plan_text = (args.plan or "").strip()
     resolve_text = (args.resolve_element or "").strip()

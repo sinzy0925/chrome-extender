@@ -1,5 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 # Windows onefile build. Run via: powershell -File scripts/build_windows.ps1
+# 実キーの .env は絶対に同梱しない（.env.example のみ）
 
 import os
 from pathlib import Path
@@ -23,6 +24,13 @@ a = Analysis(  # noqa: F821
         "browser_assistant.executor",
         "browser_assistant.export",
         "browser_assistant.gemini_client",
+        "browser_assistant.intent",
+        "browser_assistant.intent.normalize",
+        "browser_assistant.intent.sites",
+        "browser_assistant.intent.result_type",
+        "browser_assistant.intent.defaults",
+        "browser_assistant.extract_data",
+        "browser_assistant.logging_setup",
         "browser_assistant.observe",
         "browser_assistant.paths",
         "browser_assistant.safety",

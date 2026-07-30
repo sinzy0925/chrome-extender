@@ -32,3 +32,12 @@ def resolve_under_app(path: str | Path, app_dir: Path | None = None) -> Path:
     if p.is_absolute():
         return p
     return (base / p).resolve()
+
+
+DEFAULT_LOG_FILENAME = "browser_assistant.log"
+
+
+def get_default_log_path(app_dir: Path | None = None) -> Path:
+    """アプリ同階層の固定ログパス（log/browser_assistant.log）."""
+    base = app_dir if app_dir is not None else get_app_dir()
+    return base / "log" / DEFAULT_LOG_FILENAME

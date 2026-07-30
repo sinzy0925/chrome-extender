@@ -49,7 +49,8 @@ def test_spec_does_not_bundle_dotenv_secret() -> None:
     spec = Path("packaging/browser_assistant.spec").read_text(encoding="utf-8")
     assert ".env.example" in spec
     assert "実キーの .env は絶対に同梱しない" in spec
-    # datas に素の .env を追加していない
-    assert "datas=[('.env.example'" in spec.replace(" ", "") or (
-        "'.env.example'" in spec and "datas=[('.env'," not in spec.replace(" ", "")
-    )
+    # datas に素の .env を追加していない（.env.example のみ）
+    compact = spec.replace(" ", "")
+    assert ".env.example" in spec
+    assert "datas=[('.env'," not in compact
+    assert 'datas=[(".env",' not in compact

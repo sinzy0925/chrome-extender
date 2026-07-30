@@ -116,27 +116,43 @@ class GeminiClient:
                 text = ""
         return _extract_json_object(text)
 
-    def plan_steps(self, instruction: str, *, current_url: str | None = None) -> StepPlan:
+    def plan_steps(
+        self,
+        instruction: str,
+        *,
+        current_url: str | None = None,
+        intent: dict[str, Any] | None = None,
+    ) -> StepPlan:
         """Flash: 日本語指示を細かいステップ配列に分解する."""
         instruction = (instruction or "").strip()
         if not instruction:
             raise GeminiError("指示文が空です")
 
+        from browser_assistant.intent.normalize import PLANNER_RULES
+
         system = (
             "あなたはブラウザ自動操作のプランナーです。"
             "ユーザーの日本語指示を、1手ずつ実行できる細かいステップに分解してください。"
+            "intent（正規化済み意図）が付いている場合は、それを最優先の前提にしてください。"
             "あいまいな指示でも、可能な範囲で具体的な複数ステップに分けてください。"
             "1ステップに複数操作を詰め込まないでください。"
             "各ステップに action と risk(low|high) を必ず付けてください。"
             "削除・購入・送信・退会・決済・振込などは risk=high にしてください。"
-            "URL が指示に含まれる場合、最初に goto を入れてください。"
+            "intent.target_url または指示に URL がある場合、早い段階で goto を入れてください。"
+            "current_url が似ていても、検索・再取得が指示にあれば省略しないでください。"
             "完了時は最後に action=done のステップを入れてください。"
             "不明点がある場合は ask_user ステップを入れてください。"
             "出力は指定JSONスキーマのみ。"
         )
+        normalized = None
+        if isinstance(intent, dict):
+            normalized = intent.get("normalized_instruction") or instruction
         user = {
             "user_instruction": instruction,
+            "normalized_instruction": normalized or instruction,
             "current_url": current_url,
+            "intent": intent,
+            "planner_rules": PLANNER_RULES,
             "allowed_actions": sorted(
                 [
                     "click",

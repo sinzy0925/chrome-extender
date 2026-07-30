@@ -81,7 +81,7 @@ def test_env_resolved_independent_of_cwd(
 
 
 def test_log_level_changes_output_visibility(capsys: pytest.CaptureFixture[str]) -> None:
-    setup_logging("ERROR")
+    setup_logging("ERROR", log_file=False)
     log = logging.getLogger("browser_assistant.test")
     log.info("info-should-hide")
     log.error("error-should-show")
@@ -89,7 +89,7 @@ def test_log_level_changes_output_visibility(capsys: pytest.CaptureFixture[str])
     assert "error-should-show" in err_out
     assert "info-should-hide" not in err_out
 
-    setup_logging("INFO")
+    setup_logging("INFO", log_file=False)
     log.info("info-should-show")
     out = capsys.readouterr().out
     assert "info-should-show" in out

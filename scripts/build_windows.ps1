@@ -31,6 +31,13 @@ if (-not (Test-Path $Exe)) {
 
 Copy-Item (Join-Path $Root ".env.example") (Join-Path $DistDir ".env.example") -Force
 
+$AliasesSrc = Join-Path $Root "aliases"
+$AliasesDst = Join-Path $DistDir "aliases"
+if (Test-Path $AliasesSrc) {
+  New-Item -ItemType Directory -Force -Path $AliasesDst | Out-Null
+  Copy-Item (Join-Path $AliasesSrc "*") $AliasesDst -Force
+}
+
 if (Test-Path (Join-Path $DistDir ".env")) {
   throw "Refuse to ship: dist/release contains .env (secrets risk)"
 }

@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "sites": [
+    {
+      "id": "google",
+      "keywords": ["google", "グーグル", "ぐーぐる"],
+      "url": "https://www.google.com",
+      "enabled": true
+    },
+    {
+      "id": "yahoo_jp",
+      "keywords": ["yahoo", "ヤフー", "yahoo japan"],
+      "url": "https://www.yahoo.co.jp",
+      "enabled": true
+    },
+    {
+      "id": "bing",
+      "keywords": ["bing", "ビング"],
+      "url": "https://www.bing.com",
+      "enabled": true
+    }
+  ]
+}

@@ -20,7 +20,9 @@ class FakeGemini:
         self.resolution = resolution
         self.plan_calls = 0
 
-    def plan_steps(self, instruction: str, *, current_url: str | None = None) -> StepPlan:
+    def plan_steps(
+        self, instruction: str, *, current_url: str | None = None, intent=None
+    ) -> StepPlan:
         self.plan_calls += 1
         return self.plan
 

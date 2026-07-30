@@ -91,11 +91,15 @@ _EXTRACT_JS = r"""
     const ariaLabel = el.getAttribute('aria-label') || null;
     const title = el.getAttribute('title') || null;
     const href = el.getAttribute('href') || null;
+    // 絶対URLを優先（Google の相対 /url?q= や省略を避ける）
+    const absHref = (el.href && String(el.href).startsWith('http')) ? String(el.href) : (href || null);
     const text = ((el.innerText || el.textContent || '') + '').replace(/\s+/g, ' ').trim().slice(0, 120);
     const value = (el.value != null ? String(el.value) : '').slice(0, 80);
     const visible = isVisible(el);
     const rect = el.getBoundingClientRect();
     const accessibleName = (ariaLabel || placeholder || title || text || nameAttr || value || id || '').trim().slice(0, 120);
+    const hasH3 = tag === 'a' && !!el.querySelector('h3');
+    const inSerpRoot = !!(el.closest && (el.closest('#rso') || el.closest('#search') || el.closest('#center_col') || el.closest('#b_results')));
 
     let score = 0;
     if (visible) score += 50;
@@ -105,6 +109,9 @@ _EXTRACT_JS = r"""
     if (tag === 'input' || tag === 'textarea' || tag === 'select') score += 12;
     if (type === 'submit') score += 5;
     if (type === 'hidden') score -= 100;
+    // SERP オーガニック（h3 付き結果リンク）を候補上位に押し上げる
+    if (hasH3) score += 120;
+    if (hasH3 && inSerpRoot) score += 20;
 
     items.push({
       tag,
@@ -113,7 +120,7 @@ _EXTRACT_JS = r"""
       name_attr: nameAttr,
       element_id: id,
       placeholder,
-      href: href ? href.slice(0, 200) : null,
+      href: absHref ? absHref.slice(0, 200) : null,
       text,
       value: value || null,
       accessible_name: accessibleName || null,
@@ -126,6 +133,8 @@ _EXTRACT_JS = r"""
         h: Math.round(rect.height),
       },
       score,
+      has_h3: hasH3,
+      serp_organic: !!(hasH3 && visible),
     });
   }
 
@@ -222,6 +231,26 @@ def _selector_hints(item: dict[str, Any]) -> list[str]:
     return out[:4]
 
 
+def _prioritize_serp_organic(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """h3 付き結果リンクを先頭に寄せつつ、スコア順も維持する."""
+    organic: list[dict[str, Any]] = []
+    rest: list[dict[str, Any]] = []
+    seen_href: set[str] = set()
+    for item in items:
+        href = str(item.get("href") or "")
+        is_org = bool(item.get("serp_organic") or item.get("has_h3"))
+        if is_org and href:
+            if href in seen_href:
+                continue
+            seen_href.add(href)
+            organic.append(item)
+        else:
+            rest.append(item)
+    organic.sort(key=lambda x: int(x.get("score") or 0), reverse=True)
+    rest.sort(key=lambda x: int(x.get("score") or 0), reverse=True)
+    return organic + rest
+
+
 def observe_page(
     page: Any,
     *,
@@ -233,6 +262,8 @@ def observe_page(
 
     raw = page.evaluate(_EXTRACT_JS)
     items = list(raw.get("items") or [])
+    # 念のため SERP オーガニックを先頭寄せ（同点でも結果リンクを落とさない）
+    items = _prioritize_serp_organic(items)
     truncated = len(items) > max_candidates
     selected = items[:max_candidates]
 
@@ -266,10 +297,13 @@ def observe_page(
     title = raw.get("title") or ""
     preview = raw.get("body_text_preview") or ""
 
+    organic_in_selected = sum(1 for it in selected if it.get("serp_organic") or it.get("has_h3"))
     notes = [
         "全HTMLではなく操作可能要素の要約のみ",
         "取得方法: Playwright page.evaluate（devtools-mcp 相当の観察）",
     ]
+    if organic_in_selected:
+        notes.append(f"SERPオーガニック(h3)候補を優先: {organic_in_selected} 件")
     if truncated:
         notes.append(f"候補を score 上位 {max_candidates} 件に制限しました（元 {len(items)} 件）")
 

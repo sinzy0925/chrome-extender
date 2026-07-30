@@ -38,6 +38,8 @@ class ConfirmedAction:
     wait_ms: int | None = None
     extract_fields: list[str] = field(default_factory=list)
     reason: str = ""
+    result_type: str | None = None
+    press_enter: bool = False
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ConfirmedAction:
@@ -50,6 +52,7 @@ class ConfirmedAction:
         if not isinstance(fields, list):
             fields = []
         wait_ms = data.get("wait_ms")
+        rt = data.get("result_type")
         return cls(
             action=action,
             risk=str(data.get("risk") or "low"),
@@ -59,6 +62,8 @@ class ConfirmedAction:
             wait_ms=int(wait_ms) if wait_ms is not None else None,
             extract_fields=[str(x) for x in fields],
             reason=str(data.get("reason") or ""),
+            result_type=(str(rt).strip() if rt else None),
+            press_enter=bool(data.get("press_enter")),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -98,6 +103,7 @@ class ActionExecutor:
         element_timeout_ms: int = DEFAULT_ELEMENT_TIMEOUT_MS,
         reobserve: bool = True,
         max_candidates: int = 40,
+        extract_url_limit: int = 50,
     ) -> None:
         if max_steps < 1:
             raise ValueError("max_steps は 1 以上である必要があります")
@@ -106,6 +112,7 @@ class ActionExecutor:
         self.element_timeout_ms = max(0, element_timeout_ms)
         self.reobserve = reobserve
         self.max_candidates = max_candidates
+        self.extract_url_limit = max(1, extract_url_limit)
         self.steps_executed = 0
 
     def remaining_steps(self) -> int:
@@ -135,6 +142,7 @@ class ActionExecutor:
                 page,
                 confirmed,
                 element_timeout_ms=self.element_timeout_ms,
+                extract_url_limit=self.extract_url_limit,
             )
         except ActionError:
             raise
@@ -170,6 +178,7 @@ def dispatch_action(
     action: ConfirmedAction,
     *,
     element_timeout_ms: int = DEFAULT_ELEMENT_TIMEOUT_MS,
+    extract_url_limit: int = 50,
 ) -> ActionResult:
     """ページに対して1アクションだけ適用する."""
     name = action.action
@@ -197,14 +206,14 @@ def dispatch_action(
         )
 
     if name == "extract":
-        snap = take_snapshot(page)
-        data: dict[str, Any] = {
-            "url": snap.url,
-            "title": snap.title,
-            "text_preview": snap.text_preview,
-        }
-        fields = action.extract_fields or ["url", "title", "text_preview"]
-        data = {k: data.get(k) for k in fields if k in data} or data
+        from browser_assistant.extract_data import extract_by_result_type
+
+        data = extract_by_result_type(
+            page,
+            action.result_type,
+            extract_fields=action.extract_fields,
+            url_limit=extract_url_limit,
+        )
         return ActionResult(ok=True, action=name, message="extracted", data=data)
 
     if name in {"click", "type", "select"}:
@@ -226,7 +235,24 @@ def dispatch_action(
 
         try:
             if name == "click":
-                locator.click(timeout=element_timeout_ms)
+                try:
+                    locator.click(timeout=element_timeout_ms)
+                except Exception as click_exc:  # noqa: BLE001
+                    # 直前の Enter 送信などで既に検索結果へ遷移済みなら成功扱い
+                    current = str(getattr(page, "url", "") or "")
+                    if _looks_like_serp(current):
+                        logger.info(
+                            "click 失敗だが検索結果ページのため続行: url=%s err=%s",
+                            current,
+                            click_exc,
+                        )
+                        return ActionResult(
+                            ok=True,
+                            action=name,
+                            message="click skipped; already on search results",
+                            data={"selector": action.selector, "page_url": current},
+                        )
+                    raise
                 return ActionResult(
                     ok=True,
                     action=name,
@@ -236,12 +262,31 @@ def dispatch_action(
             if name == "type":
                 if action.text is None:
                     raise ActionError("type には text が必要です", action=name)
-                locator.fill(action.text, timeout=element_timeout_ms)
+                raw_text = action.text
+                submit = bool(action.press_enter)
+                if "\n" in raw_text or "\r" in raw_text:
+                    submit = True
+                text = raw_text.replace("\r", "").replace("\n", "")
+                locator.fill(text, timeout=element_timeout_ms)
+                if submit:
+                    locator.press("Enter", timeout=element_timeout_ms)
+                    # 遷移待ち（短い）
+                    try:
+                        page.wait_for_load_state("domcontentloaded", timeout=element_timeout_ms)
+                    except Exception:  # noqa: BLE001
+                        pass
                 return ActionResult(
                     ok=True,
                     action=name,
-                    message=f"typed into {action.selector}",
-                    data={"selector": action.selector, "text": action.text},
+                    message=(
+                        f"typed into {action.selector}"
+                        + (" + Enter" if submit else "")
+                    ),
+                    data={
+                        "selector": action.selector,
+                        "text": text,
+                        "press_enter": submit,
+                    },
                 )
             # select
             if action.text is None:
@@ -262,3 +307,12 @@ def dispatch_action(
             ) from exc
 
     raise ActionError(f"未実装の action: {name}", action=name)
+
+
+def _looks_like_serp(url: str) -> bool:
+    u = (url or "").lower()
+    if "/search" in u:
+        return True
+    if any(h in u for h in ("google.", "bing.", "yahoo.")) and ("q=" in u or "p=" in u):
+        return True
+    return False
